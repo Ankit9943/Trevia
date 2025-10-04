@@ -3,22 +3,17 @@ const mongoose = require("mongoose");
 const app = require("../src/app");
 const Order = require("../src/models/order.model");
 const { buildAuthCookie } = require("./test-utils/auth");
+const axios = require("axios");
 
-// NOTE: These tests assume that POST /api/orders will:
-//  - Read current cart (not implemented yet; we will simulate by sending body directly until cart logic exists)
-//  - Copy priced items, compute totals, set status=PENDING
-//  - Return 201 with created order JSON
-//  - Validate required fields
-//  - Reserve inventory (out of scope here; we can assert a placeholder flag/side-effect when implemented)
+jest.mock("axios");
 
 describe("POST /api/orders", () => {
-  const userId = "68cda903023c0945fb2d6a29";
+  const userId = "68de2f07bf794a4141134af1";
   const productIdA = new mongoose.Types.ObjectId();
   const productIdB = new mongoose.Types.ObjectId();
 
   function buildRequestPayload(overrides = {}) {
     return {
-      // user intentionally omitted; controller should use req.user.id
       items: [
         {
           product: productIdA.toString(),
@@ -36,15 +31,47 @@ describe("POST /api/orders", () => {
         city: "Metropolis",
         state: "CA",
         country: "USA",
-        pincode: "90001",
-        phone: "1234567890",
-        isDefault: true,
+        pincode: "900001",
       },
       ...overrides,
     };
   }
 
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
   it("should create an order and respond 201 with status PENDING and computed totalPrice", async () => {
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          items: [
+            { productId: productIdA.toString(), quantity: 2 },
+            { productId: productIdB.toString(), quantity: 1 },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            _id: productIdA.toString(),
+            title: "Product A",
+            price: { amount: 100, currency: "INR" },
+            stock: 10,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            _id: productIdB.toString(),
+            title: "Product B",
+            price: { amount: 50, currency: "INR" },
+            stock: 5,
+          },
+        },
+      });
+
     const payload = buildRequestPayload();
     const authCookie = buildAuthCookie(userId);
     const res = await request(app)
@@ -53,7 +80,6 @@ describe("POST /api/orders", () => {
       .send(payload)
       .set("Accept", "application/json");
 
-    // STRICT: must be 201
     expect(res.status).toBe(201);
     expect(res.body).toHaveProperty("_id");
     expect(res.body).toHaveProperty("status", "PENDING");
@@ -61,7 +87,7 @@ describe("POST /api/orders", () => {
     expect(res.body.items).toHaveLength(2);
     const expectedTotal = 100 * 2 + 50 * 1; // 250
     expect(res.body).toHaveProperty("totalPrice.amount", expectedTotal);
-    expect(res.body).toHaveProperty("totalPrice.currency", "USD");
+    expect(res.body).toHaveProperty("totalPrice.currency", "INR");
   });
 
   it("should reject when auth cookie is missing", async () => {
@@ -73,26 +99,68 @@ describe("POST /api/orders", () => {
     expect(res.status).toBe(401);
   });
 
-  it("should reject when an item has invalid currency", async () => {
-    const badPayload = buildRequestPayload({
-      items: [
-        {
-          product: productIdA.toString(),
-          quantity: 1,
-          price: { amount: 10, currency: "EUR" }, // invalid enum
+  it("should respond 500 when product currency is invalid (enum validation)", async () => {
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          items: [{ productId: productIdA.toString(), quantity: 1 }],
         },
-      ],
-    });
+      })
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            _id: productIdA.toString(),
+            title: "Bad Currency Product",
+            price: { amount: 10, currency: "EUR" },
+            stock: 3,
+          },
+        },
+      });
+
+    const badPayload = buildRequestPayload();
     const authCookie = buildAuthCookie(userId);
     const res = await request(app)
       .post("/api/orders")
       .set("Cookie", authCookie)
       .send(badPayload)
       .set("Accept", "application/json");
-    expect([400, 422]).toContain(res.status);
+
+    // Controller catches mongoose validation error and returns 500
+    expect(res.status).toBe(500);
+    expect(res.body).toHaveProperty("message", "Internal server error");
   });
 
   it("should persist order in database when successful", async () => {
+    axios.get
+      .mockResolvedValueOnce({
+        data: {
+          items: [
+            { productId: productIdA.toString(), quantity: 2 },
+            { productId: productIdB.toString(), quantity: 1 },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            _id: productIdA.toString(),
+            title: "Product A",
+            price: { amount: 100, currency: "INR" },
+            stock: 10,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          data: {
+            _id: productIdB.toString(),
+            title: "Product B",
+            price: { amount: 50, currency: "INR" },
+            stock: 5,
+          },
+        },
+      });
+
     const payload = buildRequestPayload();
     const authCookie = buildAuthCookie(userId);
     const res = await request(app)

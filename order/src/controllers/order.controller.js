@@ -46,7 +46,7 @@ async function createOrder(req, res) {
         priceAmount += product.price.amount * item.quantity;
 
         return {
-          id: product._id,
+          product: product._id,
           title: product.title,
           price: {
             amount: product.price.amount,
